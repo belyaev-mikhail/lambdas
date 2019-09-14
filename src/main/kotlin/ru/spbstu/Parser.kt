@@ -27,11 +27,11 @@ object StmtParser : StringsAsParsers, DelegateParser<Char, List<Stmt>> {
 
     val binding = zip(assignee, expr, ::Binding)
 
-    val eval = expr.map(::Eval)
+    val eval = expr.map { Eval(it) }
 
-    val evalAsInt = (-":i" + expr).map(::EvalAsInt)
-    val evalAsBoolean = (-":b" + expr).map(::EvalAsBoolean)
-    val evalAsList = (-":l" + expr).map(::EvalAsList)
+    val evalAsInt = (-":i" + expr).map { Eval(it, EvalFormat.INTEGER) }
+    val evalAsBoolean = (-":b" + expr).map { Eval(it, EvalFormat.BOOLEAN) }
+    val evalAsList = (-":l" + expr).map { Eval(it, EvalFormat.LIST) }
 
     val debug = (+":debug").map { Debug }
 

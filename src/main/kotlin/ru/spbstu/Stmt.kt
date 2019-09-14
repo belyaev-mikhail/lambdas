@@ -1,14 +1,13 @@
 package ru.spbstu
 
-import ru.spbstu.wheels.joinTo
-import ru.spbstu.wheels.joinToString
+import ru.spbstu.wheels.*
+import ru.spbstu.wheels.Option.Companion.empty
+import ru.spbstu.wheels.Option.Companion.just
 
 sealed class Stmt
 data class Binding(val symbol: Symbol, val expr: Expr): Stmt()
-data class Eval(val expr: Expr): Stmt()
-data class EvalAsInt(val expr: Expr): Stmt()
-data class EvalAsList(val expr: Expr): Stmt()
-data class EvalAsBoolean(val expr: Expr): Stmt()
+enum class EvalFormat { OBJECT, INTEGER, BOOLEAN, LIST }
+data class Eval(val expr: Expr, val format: EvalFormat = EvalFormat.OBJECT): Stmt()
 object Debug : Stmt()
 
 class EvalState(val output: Appendable,
@@ -18,17 +17,17 @@ class EvalState(val output: Appendable,
 
 fun Expr.run(state: EvalState, evalSteps: Int) = replace(state.bindings).eval(evalSteps)
 
-fun Expr.reifyBoolean(stepLimit: Int = 1000): Boolean {
+fun Expr.reifyBoolean(stepLimit: Int = 1000): Option<Boolean> = run {
     val t = FreeVar("#T")
     val f = FreeVar("#F")
     when(this(t, f).eval(stepLimit)) {
-        t -> return true
-        f -> return false
-        else -> throw IllegalArgumentException("Expression $this is not a boolean")
+        t -> just(true)
+        f -> just(false)
+        else -> empty()
     }
 }
 
-fun Expr.reifyInt(stepLimit: Int = 1000): Int {
+fun Expr.reifyInt(stepLimit: Int = 1000): Option<Int> {
     val f = FreeVar("#F")
     val z = FreeVar("#Z")
     var res = this(f, z).eval(stepLimit)
@@ -37,7 +36,7 @@ fun Expr.reifyInt(stepLimit: Int = 1000): Int {
         when(res) {
             is FreeVar -> {
                 if(res != z) break@loop
-                return total
+                return just(total)
             }
             is App -> {
                 val func = res.function
@@ -48,17 +47,17 @@ fun Expr.reifyInt(stepLimit: Int = 1000): Int {
             else -> break@loop
         }
     }
-    throw IllegalArgumentException("Expression $this is not an integer")
+    return empty()
 }
 
-fun Expr.reifyList(stepLimit: Int = 1000): List<Expr> {
+fun Expr.reifyList(stepLimit: Int = 1000): Option<List<Expr>> {
     val f = FreeVar("#F")
     val gravestone = FreeVar("#G")
     var current = this
     val result = mutableListOf<Expr>()
     loop@ while(true) {
-        when(val decons = current(f, gravestone).eval()) {
-            gravestone -> return result
+        when(val decons = current(f, gravestone).eval(stepLimit)) {
+            gravestone -> return just(result)
             is App -> {
                 val (f1, a2) = decons
                 if(a2 != gravestone || f1 !is App) break@loop
@@ -72,18 +71,31 @@ fun Expr.reifyList(stepLimit: Int = 1000): List<Expr> {
             else -> break@loop
         }
     }
-    throw IllegalArgumentException("Expression $this is not a list")
+    return empty()
 }
+
+fun Expr.reifyAsAnything(stepLimit: Int): Any =
+    reifyInt(stepLimit)
+        .orElse { reifyBoolean(stepLimit) }
+        .orElse { reifyList(stepLimit).map { list -> list.map { it.reifyAsAnything(stepLimit) } } }
+        .getOrElse { this }
 
 fun Stmt.eval(state: EvalState, evalSteps: Int) {
     when (this) {
         is Binding -> state.bindings.put(symbol, expr.run(state, evalSteps))
-        is Eval -> expr.run(state, evalSteps).let { state.output.appendln("$it") }
-        is EvalAsInt -> expr.run(state, evalSteps).reifyInt(evalSteps).let { state.output.appendln("$it") }
-        is EvalAsBoolean -> expr.run(state, evalSteps).reifyBoolean(evalSteps).let { state.output.appendln("$it") }
-        is EvalAsList -> expr.run(state, evalSteps).reifyList(evalSteps).map {
-            try { it.reifyInt(evalSteps) } catch (ex: Exception) { it }
-        }.let { state.output.appendln("$it") }
+        is Eval -> {
+            val e = expr.run(state, evalSteps)
+            when(format) {
+                EvalFormat.OBJECT -> e as Any
+                EvalFormat.INTEGER -> e.reifyInt(evalSteps)
+                    .getOrElse { throw Exception("Expression $e is not an integer") }
+                EvalFormat.BOOLEAN -> e.reifyBoolean(evalSteps)
+                    .getOrElse { throw Exception("Expression $e is not a boolean") }
+                EvalFormat.LIST -> e.reifyList(evalSteps).map { list ->
+                    list.map { it.reifyAsAnything(evalSteps) }
+                }.getOrElse { throw Exception("Expression $e is not a list") }
+            }.let { state.output.appendln("$it") }
+        }
         is Debug -> state.bindings.joinTo(state.output, "\n")
     }
 }
